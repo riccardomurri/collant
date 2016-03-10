@@ -1,3 +1,31 @@
+# general exclusion patterns
+*.a
+*.o
+*.sw[nop]
+*~
+.#*
+[#]*#
+*.bak
+*.old
+
+# Collectl's raw data files
+*.raw
+*.raw.gz
+
+# Final documents - ignore by default
+*.dvi
+*.pdf
+*.ps
+
+# archive formats
+*.tar
+*.tar.bz2
+*.tar.gz
+*.zip
+
+
+## GitHub's Python `.gitignore` file::
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

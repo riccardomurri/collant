@@ -1,0 +1,110 @@
+#! /bin/bash
+
+me=$(basename "$0")
+stamp="$(date +'%Y-%m-%d.%H%M').$(hostname -s)"
+
+export TMPDIR="${TMPDIR:-/tmp}"
+
+start () {
+    local tag="$1"; shift;
+    local name="${tag}.${stamp}"
+
+    cd ${TMPDIR:-/tmp}
+
+    sudo "$@" > ${name}.log 2>&1 &
+    echo $! > "${name}.pid"
+    echo "${name}" >> jobs.list
+}
+
+
+stop () {
+    local tag="$1"; shift;
+
+    cd "$TMPDIR"
+
+    local name=$(fgrep "${tag}" jobs.list)
+    if [ -z "$name" ]; then
+        return 1 # ERROR
+    fi
+
+    local pid=$(cat "${name}.pid")
+    sudo kill "$pid"
+    while ps u "$pid" > /dev/null; do
+        sleep 0.1
+    done
+    rm "${name}.pid"
+
+    sudo mv -v "${name}"* "$HOME/stats"
+
+    sed -e "/^${name}/d" -i jobs.list
+
+    return 0 # OK
+}
+
+
+case "$1" in
+
+    start)
+        sudo sync; sleep 1
+
+        # one program to collect them all
+        start 'collectl' collectl -i 0.1 -s cFn -f "collectl.${stamp}"
+
+        # # snapshot NFS data
+        # sudo nfsstat -o all -l > $HOME/stats/"nfsstat_start.${stamp}"
+
+        # # CPU usage stats
+        # start 'iostat_cpu'  iostat -c 1
+
+        # # disk usage stats
+        # start 'iostat_disk' iostat -x -d -k 1
+
+        # # kernel cache info
+        # start 'vmstat_slab' vmstat --wide --slab --unit k 1
+
+        # # memory info
+        # start 'vmstat_mem'  vmstat --one-header --wide --unit k 1
+
+        # # in-kernel info
+        # #start 'perf_nfs'    perf record -e 'nfs4:*,nfs:*,sched:*' --call-graph dwarf -F 11 -a -o "perf_nfs.${stamp}.data"
+        ;;
+
+    stop)
+        sudo sync; sleep 2
+
+        # one program to collect them all
+        stop 'collectl'
+
+        # snapshot NFS data
+        #sudo nfsstat -o all -l > "$HOME/stats/nfsstat_stop.${stamp}"
+
+        #stop started "jobs"
+        #stop 'iostat_cpu'
+        #stop 'iostat_disk'
+        #stop 'vmstat_slab'
+        #stop 'vmstat_mem'
+        #stop 'perf_nfs'
+        ;;
+
+    save)
+        name="$2"
+        if [ -z "$name" ]; then
+            echo "$me: 'save' subcommand requires a NAME argument"
+            exit 1
+        fi
+
+        mkdir -pv collected/"$name"
+        mv -v stats/* collected/"$name"
+        ;;
+
+    abort)
+        rm -rf stats/*
+        rm -rf collected/
+        (cd /tmp && sudo rm -f *.log *.pid *.raw.gz jobs.list)
+        ;;
+
+    *)
+        echo "$me start|stop|save" 1>&2
+        ;;
+
+esac
