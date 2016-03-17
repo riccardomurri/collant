@@ -153,9 +153,9 @@ def plot_net_traffic_kb(hostname, ax, perfdata):
 def plot_nfsv4_ops(hostname, ax, perfdata):
     if hostname == 'tmaps':
         # use server-side counters
-        cols = ['nfs_4cd_read', 'nfs_4cd_write', 'nfs_4cd_commit']
-    else:
         cols = ['nfs_4sd_read', 'nfs_4sd_write', 'nfs_4sd_commit']
+    else:
+        cols = ['nfs_4cd_read', 'nfs_4cd_write', 'nfs_4cd_commit']
     perfdata[cols].plot(ax=ax, kind='line')
 
 
