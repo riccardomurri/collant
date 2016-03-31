@@ -48,7 +48,7 @@ case "$1" in
         sudo sync; sleep 1
 
         # one program to collect them all
-        start 'collectl' collectl -i 0.1 -s cFn -f "collectl.${stamp}"
+        start 'collectl' collectl -i 0.1 -s cdFmn -f "collectl.${stamp}"
 
         # # snapshot NFS data
         # sudo nfsstat -o all -l > $HOME/stats/"nfsstat_start.${stamp}"
