@@ -5,6 +5,8 @@ stamp="$(date +'%Y-%m-%d.%H%M').$(hostname -s)"
 
 export TMPDIR="${TMPDIR:-/tmp}"
 
+collect_home=${COLLECT_HOME:-$PWD}
+
 start () {
     local tag="$1"; shift;
     local name="${tag}.${stamp}"
@@ -34,7 +36,7 @@ stop () {
     done
     rm "${name}.pid"
 
-    sudo mv -v "${name}"* "$HOME/stats"
+    sudo mv -v "${name}"* "${collect_home}/stats"
 
     sed -e "/^${name}/d" -i jobs.list
 
@@ -93,18 +95,18 @@ case "$1" in
             exit 1
         fi
 
-        mkdir -pv collected/"$name"
-        mv -v stats/* collected/"$name"
+        mkdir -pv "$collect_home/collected/$name"
+        mv -v stats/* "$collect_home/collected/$name"
         ;;
 
     abort)
-        rm -rf stats/*
-        rm -rf collected/
-        (cd /tmp && sudo rm -f *.log *.pid *.raw.gz jobs.list)
+        rm -rf "$collect_home/stats"/*
+        rm -rf "$collect_home/collected/"
+        (cd $TMPDIR && sudo rm -f *.log *.pid *.raw.gz jobs.list)
         ;;
 
     *)
-        echo "$me start|stop|save" 1>&2
+        echo "$me start|stop|save|abort" 1>&2
         ;;
 
 esac
