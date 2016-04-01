@@ -109,24 +109,30 @@ ONE_SECOND = timedelta(seconds=1)
 #
 
 def plot_cpu_utilization(hostname, fig, ax, perfdata):
-    perfdata[['cpu_user_percent', 'cpu_sys_percent', 'cpu_wait_percent']].plot(
-        ax=ax, kind='area', stacked=True, ylim=(0, 100),
-    )
+    width, height = _get_ax_size(fig, ax)
+    perfdata = _resample_to_fit_width(perfdata, width, how='max')
+    perfdata[['cpu_user_percent', 'cpu_sys_percent', 'cpu_wait_percent']].plot(ax=ax, kind='area', stacked=True, ylim=(0, 100))
 
 
 def plot_net_traffic_pkts(hostname, fig, ax, perfdata):
+    width, height = _get_ax_size(fig, ax)
+    perfdata = _resample_to_fit_width(perfdata, width, how='max')
     perfdata[['net_rxpkttot', 'net_txpkttot']].plot(
         ax=ax, kind='line',
     )
 
 
 def plot_net_traffic_kb(hostname, fig, ax, perfdata):
+    width, height = _get_ax_size(fig, ax)
+    perfdata = _resample_to_fit_width(perfdata, width, how='max')
     perfdata[['net_rxkbtot', 'net_txkbtot']].plot(
         ax=ax, kind='line',
     )
 
 
 def plot_nfsv4_ops(hostname, fig, ax, perfdata):
+    width, height = _get_ax_size(fig, ax)
+    perfdata = _resample_to_fit_width(perfdata, width, how='max')
     if hostname == 'tmaps':
         # use server-side counters
         cols = ['nfs_4sd_read', 'nfs_4sd_write', 'nfs_4sd_commit']
@@ -136,6 +142,8 @@ def plot_nfsv4_ops(hostname, fig, ax, perfdata):
 
 
 def plot_nfsv4_md_read(hostname, fig, ax, perfdata):
+    width, height = _get_ax_size(fig, ax)
+    perfdata = _resample_to_fit_width(perfdata, width, how='max')
     if hostname == 'tmaps':
         # use server-side ctrs
         cols = [
@@ -157,6 +165,8 @@ def plot_nfsv4_md_read(hostname, fig, ax, perfdata):
 
 
 def plot_nfsv4_md_write(hostname, fig, ax, perfdata):
+    width, height = _get_ax_size(fig, ax)
+    perfdata = _resample_to_fit_width(perfdata, width, how='max')
     if hostname == 'tmaps':
         # use server-side ctrs
         cols = [
@@ -188,6 +198,26 @@ def _get_ax_size(fig, ax):
     width *= fig.dpi
     height *= fig.dpi
     return width, height
+
+
+def _resample_to_fit_width(perfdata, width, how='max'):
+    """
+    Downsample data to have no more than 2*width samples.
+    If `perfdata` already contains less than that data points, then
+    return it unchanged.
+    """
+    samples = len(perfdata.index)
+    if samples > 2*width:
+        # resample to match resolution
+        t_start = perfdata.index.min()
+        t_end = perfdata.index.max()
+        duration_ms = 1 + int((t_end - t_start).total_seconds() * 1e3)
+        tick_duration_ms = int(duration_ms / width)
+        # see: http://stackoverflow.com/questions/17001389/pandas-resample-documentation
+        return perfdata.resample(rule='{0}L'.format(tick_duration_ms), how=how)
+    else:
+        # no changes
+        return perfdata
 
 
 def plot_perfdata(outfile, db_uri, hosts=const.hosts):
