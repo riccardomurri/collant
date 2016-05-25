@@ -2,9 +2,17 @@
 
 TMAPS_USER=ubuntu
 
-NUMFILES=${1:-10000}
+# "typical" PelkmansLab experiment parameters
+nr_plates=1
+nr_zplanes=1
+nr_timepoints=1
+nr_channels=4
+nr_sites=50
+nr_wells=250
+
+NUMFILES=${1:-$(( $nr_plates * $nr_zplanes * $nr_timepoints * $nr_channels * $nr_sites * $nr_wells ))}
 FILESIZE=10MB
-EXPERIMENT=${2:-/data/storage/riccardo.tmp}
+EXPERIMENT=${2:-$PWD/tmp}
 BATCH_SIZE=${3:-10}
 
 URL="file://$EXPERIMENT"
@@ -30,10 +38,14 @@ set -ex  # debugging
 iosim.py create $URL $NUMFILES $FILESIZE --jobs 100
 sync
 
-run metaextract.iosim  iosim.py benchmark read $URL 100  $NUMFILES
+#                                                    ===============================  ======================  ================
+#                                                    nr. jobs                         nr. images per job      payload (if any)
+#                                                    ===============================  ======================  ================
+run metaextract.iosim  iosim.py benchmark read $URL  $(( $NUMFILES / $BATCH_SIZE ))   $BATCH_SIZE
 #run metaconfig.iosim
-#run imextract.iosim
-run align.iosim        iosim.py benchmark read $URL 1000 $NUMFILES  # FIXME: should read twice the images!
-run corilla.iosim      iosim.py benchmark read $URL 2    $NUMFILES
-run jterator.iosim     iosim.py benchmark read $URL 5000 $NUMFILES
-#run illuminati.iosim
+run imextract.iosim    iosim.py benchmark write $URL $(( $NUMFILES / $BATCH_SIZE ))   $BATCH_SIZE             $FILESIZE
+run align.iosim        iosim.py benchmark read $URL  $(( $NUMFILES / $BATCH_SIZE ))   $(( 2 * $BATCH_SIZE ))
+run corilla.iosim      iosim.py benchmark read $URL  $nr_channels                     $(( $NUMFILES / $nr_channels ))
+run jterator.iosim     iosim.py benchmark read $URL  $(( $NUMFILES / $nr_channels ))  $nr_channels
+# NOTE: the actual illuminati usage is *much* worse: around 7'000'000/$BATCH_SIZE jobs would get submitted, each processing $BATCH_SIZE images, which adds startup overhead to the (already huge) filesystem load ...
+run illuminati.iosim   iosim.py benchmark write $URL 100                              70000                   16kB
