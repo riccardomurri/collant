@@ -50,8 +50,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 import pandas as pd
 
-#from sqlalchemy import (create_engine, Table, Column, DateTime, Float, Integer, Text, MetaData)
-#from sqlalchemy.sql import select
+import sqlalchemy
+
 
 
 class const:
@@ -356,7 +356,7 @@ def _expand_db_uri(db_uri):
 def database(db_uri):
     db_uri = _expand_db_uri(db_uri)
     logging.info("Using database URI `%s`", db_uri)
-    with dataset.connect(db_uri) as db:
+    with dataset.connect(db_uri, engine_kwargs={'poolclass':sqlalchemy.pool.StaticPool}) as db:
         # ensure a minimal structure is there
         db.get_table('perfdata')
         db.get_table('mtime', 'path', 'String').create_index(['path'])
@@ -574,10 +574,8 @@ def _load_perfdata_file(path, db, force=False, metadata=None):
     step = metadata['step'] + '.' + metadata['phase']
     data = read_collectl_raw_data(path, format='dict')
     # insert all data in the DB in one go
-    #db['perfdata'].insert_many(dict(host=host, step=step, **row) for row in data)
-    perfdata_tab = db['perfdata']
-    for row in data:
-        perfdata_tab.insert(dict(host=host, step=step, **row))
+    db['perfdata'].insert_many(dict(host=host, step=step, **row) for row in data)
+
     # update last modification timestamp
     db['mtime'].upsert(dict(path=path, mtime=time.time()), ['path'])
     return True
