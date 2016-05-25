@@ -11,6 +11,8 @@ start () {
     local tag="$1"; shift;
     local name="${tag}.${stamp}"
 
+    mkdir -p "${collect_home}/stats"
+
     cd ${TMPDIR:-/tmp}
 
     sudo "$@" > ${name}.log 2>&1 &
