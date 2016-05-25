@@ -34,6 +34,7 @@ import cPickle as pickle
 from cStringIO import StringIO
 from datetime import datetime, date, timedelta
 import logging
+import math
 import os
 from subprocess import check_output as run
 import sys
@@ -52,69 +53,161 @@ import pandas as pd
 
 import sqlalchemy
 
+import yaml
 
 
 class const:
     """A namespace for constant and default values."""
 
     logfmt = "%(asctime)s [%(processName)s/%(process)d %(funcName)s:%(lineno)d] %(levelname)s: %(message)s"
-    loglevel = logging.DEBUG
+    loglevel = logging.INFO
 
     db_uri = 'sqlite:///perfdata.db'
 
-    hosts = {
-        # Restricted view:
-        #    'compute001': (0, 0),
-        #    'tmaps':      (0, 1),
-        # Full view:
-         'compute001': (0, 0),
-         'compute002': (0, 1),
-         'compute003': (0, 2),
-         'compute004': (0, 3),
-         'compute005': (1, 0),
-         'compute006': (1, 1),
-         'compute007': (1, 2),
-         'compute008': (1, 3),
-         'compute009': (2, 0),
-         'compute010': (2, 1),
-         # -- empty slots for visual emphasis --
-         'tmaps':      (2, 3)
-    }
-
-    steps = [
-        ('metaextract', 'init'),
-        ('metaextract', 'run'),
-        ('metaconfig',  'init'),
-        ('metaconfig',  'run'),
-        ('metaconfig',  'collect'),
-        ('imextract',   'init'),
-        ('imextract',   'run'),
-        ('align',       'init'),
-        ('align',       'run'),
-        ('align',       'collect'),
-        ('corilla',     'init'),
-        ('corilla',     'run'),
-        ('illuminati',  'init'),
-        ('illuminati',  'run'),
-        ('jterator',    'init'),
-        ('jterator',    'run'),
-        ('jterator',    'collect'),
-    ]
 
 ONE_SECOND = timedelta(seconds=1)
+
+
+def grid_size(p, min_w=0, min_h=0):
+    """
+    Return the minimal size (width, height) of a grid that can
+    accomodate `p` slots.
+
+    Examples::
+
+      >>> grid_size(9)
+      (3, 3)
+
+      >>> grid_size(1)
+      (1, 1)
+
+      >>> grid_size(5)
+      (2, 3)
+
+      >>> grid_size(12)
+      (3, 4)
+    """
+    q = int(math.sqrt(p))
+    for w, h in [(q-1, q), (q, q), (q, q+1)]:
+        if w >= min_w and h >= min_h and w*h >= p:
+            return w,h
+    return (max(q+1, min_w), max(q+1, min_h))
+
+
+class Config(object):
+
+    defaults = {
+        'hosts': {
+            'role': 'client',
+        },
+        'steps': [
+            ('metaextract', 'init'),
+            ('metaextract', 'run'),
+            ('metaconfig',  'init'),
+            ('metaconfig',  'run'),
+            ('metaconfig',  'collect'),
+            ('imextract',   'init'),
+            ('imextract',   'run'),
+            ('align',       'init'),
+            ('align',       'run'),
+            ('align',       'collect'),
+            ('corilla',     'init'),
+            ('corilla',     'run'),
+            ('illuminati',  'init'),
+            ('illuminati',  'run'),
+            ('jterator',    'init'),
+            ('jterator',    'run'),
+            ('jterator',    'collect'),
+        ],
+    }
+
+    def __init__(self, cfgfile):
+        self.hosts = defaultdict(dict)
+        self.steps = []
+        self._read_config_file(cfgfile)
+        nrows, ncols, locs = self._determine_plot_locations()
+        self.plot_nrows = nrows
+        self.plot_ncols = ncols
+        for name, pos in locs.items():
+            self.hosts[name]['pos'] = pos
+
+
+    def _read_config_file(self, filename):
+        with open(filename, 'r') as cfgfile:
+            data = yaml.load(cfgfile)
+            assert 'hosts' in data, (
+                "Configuration file must contains a `hosts:` section!"
+            )
+            for hostdata in data['hosts']:
+                # each hosts can be either a bare host name, or a
+                # dictionary with attributes like `role:` (client or
+                # server) or `pos:` (position in the plot)
+                try:
+                    name = hostdata['name']
+                except (TypeError, KeyError):
+                    name = hostdata
+                    hostdata = {}
+                if 'role' in hostdata:
+                    self.hosts[name]['role'] = hostdata['role']
+                else:
+                    self.hosts[name]['role'] = self.defaults['hosts']['role']
+                if 'pos' in hostdata:
+                    self.hosts[name]['pos'] = hostdata['pos']
+            if 'steps' in data:
+                self.steps = data['steps']
+            else:
+                self.steps = self.default['steps'][:]
+
+
+    def _determine_plot_locations(self):
+        locs = {}
+        min_w = min_h = 0
+        allocated_xs = set()
+        allocated_ys = set()
+        unallocated = set()
+        for name, host in self.hosts.items():
+            if 'pos' in host:
+                x, y = host['pos']
+                allocated_xs.add(x)
+                allocated_ys.add(y)
+                # update min grid size
+                min_w = max(min_w, x)
+                min_h = max(min_h, y)
+                # record invariant position
+                locs[name] = x, y
+            else:
+                unallocated.add(name)
+        w, h = grid_size(len(self.hosts), min_w, min_h)
+        unallocated = sorted(unallocated)
+        for x in range(w):
+            for y in range(h):
+                if not unallocated:
+                    break
+                if x in allocated_xs and y in allocated_ys:
+                    continue
+                name = unallocated.pop()
+                locs[name] = x, y
+            if not unallocated:
+                break
+        return w, h, locs
+
+
+    def is_nfs_server(self, hostname):
+        return (self.hosts[hostname]['role'] == 'nfs-server')
+
 
 
 #
 # Plot definitions
 #
 
-def plot_cpu_utilization(hostname, fig, ax, perfdata):
+def plot_cpu_utilization(cfg, hostname, fig, ax, perfdata):
     width, height = _get_ax_size(fig, ax)
     perfdata = _resample_to_fit_width(perfdata, width, how='max')
     perfdata[['cpu_user_percent', 'cpu_sys_percent', 'cpu_wait_percent']].plot(ax=ax, kind='area', stacked=True, ylim=(0, 100))
 
 
-def plot_net_traffic_pkts(hostname, fig, ax, perfdata):
+def plot_net_traffic_pkts(cfg, hostname, fig, ax, perfdata):
     width, height = _get_ax_size(fig, ax)
     perfdata = _resample_to_fit_width(perfdata, width, how='max')
     perfdata[['net_rxpkttot', 'net_txpkttot']].plot(
@@ -122,7 +215,7 @@ def plot_net_traffic_pkts(hostname, fig, ax, perfdata):
     )
 
 
-def plot_net_traffic_kb(hostname, fig, ax, perfdata):
+def plot_net_traffic_kb(cfg, hostname, fig, ax, perfdata):
     width, height = _get_ax_size(fig, ax)
     perfdata = _resample_to_fit_width(perfdata, width, how='max')
     perfdata[['net_rxkbtot', 'net_txkbtot']].plot(
@@ -130,10 +223,10 @@ def plot_net_traffic_kb(hostname, fig, ax, perfdata):
     )
 
 
-def plot_nfsv4_ops(hostname, fig, ax, perfdata):
+def plot_nfsv4_ops(cfg, hostname, fig, ax, perfdata):
     width, height = _get_ax_size(fig, ax)
     perfdata = _resample_to_fit_width(perfdata, width, how='max')
-    if hostname == 'tmaps':
+    if cfg.is_nfs_server(hostname):
         # use server-side counters
         cols = ['nfs_4sd_read', 'nfs_4sd_write', 'nfs_4sd_commit']
     else:
@@ -141,10 +234,10 @@ def plot_nfsv4_ops(hostname, fig, ax, perfdata):
     perfdata[cols].plot(ax=ax, kind='line')
 
 
-def plot_nfsv4_md_read(hostname, fig, ax, perfdata):
+def plot_nfsv4_md_read(cfg, hostname, fig, ax, perfdata):
     width, height = _get_ax_size(fig, ax)
     perfdata = _resample_to_fit_width(perfdata, width, how='max')
-    if hostname == 'tmaps':
+    if cfg.is_nfs_server(hostname):
         # use server-side ctrs
         cols = [
             'nfs_4sd_access',
@@ -164,10 +257,10 @@ def plot_nfsv4_md_read(hostname, fig, ax, perfdata):
     perfdata[cols].plot(ax=ax, kind='line')
 
 
-def plot_nfsv4_md_write(hostname, fig, ax, perfdata):
+def plot_nfsv4_md_write(cfg, hostname, fig, ax, perfdata):
     width, height = _get_ax_size(fig, ax)
     perfdata = _resample_to_fit_width(perfdata, width, how='max')
-    if hostname == 'tmaps':
+    if cfg.is_nfs_server(hostname):
         # use server-side ctrs
         cols = [
             'nfs_4sd_create',
@@ -220,7 +313,7 @@ def _resample_to_fit_width(perfdata, width, how='max'):
         return perfdata
 
 
-def plot_perfdata(outfile, db_uri, hosts=const.hosts):
+def plot_perfdata(outfile, db_uri, cfg):
     # bring all data into memory
     data = pd.read_sql('perfdata', db_uri,
                        index_col=['step', 'host', 'timestamp'],
@@ -229,20 +322,19 @@ def plot_perfdata(outfile, db_uri, hosts=const.hosts):
     # matplotlib initialization
     matplotlib.style.use('ggplot')
 
-    NROWS = 1 + max(x for x,y in hosts.values())
-    NCOLS = 1 + max(y for x,y in hosts.values())
+    NROWS = cfg.plot_nrows
+    NCOLS = cfg.plot_ncols
 
     # make plots
     pdf = PdfPages(outfile)
-    for step, phase in const.steps:
-        step_and_phase = '{step}.{phase}'.format(step=step, phase=phase)
+    for step in cfg.steps:
         # some datasets skip `align.*`, etc. - data is, as always, not consistent
         steps_in_data = data.index.get_level_values('step')
-        if step_and_phase not in steps_in_data:
-            logging.warning("Skipping plotting step `%s`: no data collected!", step_and_phase)
+        if step not in steps_in_data:
+            logging.warning("Skipping plotting step `%s`: no data collected!", step)
             continue
         else:
-            logging.info("Plotting data for step `%s` ...", step_and_phase)
+            logging.info("Plotting data for step `%s` ...", step)
         for plot, title in [
                 (plot_cpu_utilization,  "CPU utilization"),
                 (plot_net_traffic_pkts, "Net traffic (packets)"),
@@ -257,19 +349,18 @@ def plot_perfdata(outfile, db_uri, hosts=const.hosts):
                 sharex=True, sharey=True,
                 figsize=(14*NCOLS, 10*NROWS),
             )
-            fig.suptitle('{step}.{phase} - {title}'
-                         .format(step=step, phase=phase, title=title))
-            for host in hosts:
+            fig.suptitle('{step} - {title}'.format(step=step, title=title))
+            for host in cfg.hosts:
                 hosts_in_data = data.index.get_level_values('host')
                 if host not in hosts_in_data:
                     logging.warning("Skipping host `%s`: no data collected!", host)
                     continue
-                perfdata = data.loc[step_and_phase, host]
+                perfdata = data.loc[step, host]
                 logging.debug("  - for host '%s' ...", host)
                 # select subplot axis; index is different depending on
                 # whether the subplots are arranged in a row, column,
                 # or a 2D matrix ...
-                x, y = hosts[host]
+                x, y = cfg.hosts[host]['pos']
                 if NROWS == 1:
                     loc = y
                 elif NCOLS == 1:
@@ -277,7 +368,7 @@ def plot_perfdata(outfile, db_uri, hosts=const.hosts):
                 else:
                     loc = x, y
                 ax = axes[loc]
-                plot(host, fig, ax, perfdata)
+                plot(cfg, host, fig, ax, perfdata)
                 ax.set_title(host)
             pdf.savefig()
             plt.close(fig)
@@ -375,9 +466,7 @@ def _get_metadata_from_filename(pathname):
     Example::
 
       >>> md = _get_metadata_from_filename('/tmp/metaextract.run/iostat_cpu.2016-02-04.1107.compute001.log')
-      >>> md['step'] == 'metaextract'
-      True
-      >>> md['phase'] == 'run'
+      >>> md['step'] == 'metaextract.run'
       True
       >>> md['label'] == 'iostat_cpu'
       True
@@ -392,9 +481,7 @@ def _get_metadata_from_filename(pathname):
       True
 
       >>> md = _get_metadata_from_filename('align.collect/collectl.2016-02-26.1004.compute001-compute001-20160226-100445.raw.gz')
-      >>> md['step'] == 'align'
-      True
-      >>> md['phase'] == 'collect'
+      >>> md['step'] == 'align.collect'
       True
       >>> md['label'] == 'collectl'
       True
@@ -415,7 +502,7 @@ def _get_metadata_from_filename(pathname):
     metadata = {}
     parts = pathname.split('/')
     # last directory name is, e.g., `metaextract.run`
-    metadata['step'], metadata['phase'] = parts[-2].split('.')
+    metadata['step'] = parts[-2]
     # file name format is "${label}.${date}.${hhmm}.${hostname}.log"
     metadata['label'], date, hhmm, more = parts[-1].split('.')[:4]
     year_, month_, day_ = date.split('-')
@@ -571,8 +658,9 @@ def _load_perfdata_file(path, db, force=False, metadata=None):
     if metadata is None:
         metadata = _get_metadata_from_filename(path)
     host = metadata['hostname']
-    step = metadata['step'] + '.' + metadata['phase']
+    step = metadata['step']
     data = read_collectl_raw_data(path, format='dict')
+
     # insert all data in the DB in one go
     db['perfdata'].insert_many(dict(host=host, step=step, **row) for row in data)
 
@@ -614,13 +702,25 @@ def cli():
         help="Path to DB file or connection string")
 @option("--force/--no-force", default=False,
         help="Process file even if data in the DB is newer.")
-def scan(rootdir, db_uri, force=False):
+@option("--config", "-c", 'cfgfile',
+        default=None, envvar='COLLANT_CONFIG', metavar='PATH',
+        help="Path to the a configuration file (optional).")
+def scan(rootdir, db_uri, force=False, cfgfile=None):
     """
     Load collectl raw data files from a directory into the DB.
+
+    If `cfgfile` is not ``None``, then the only data relating to hosts
+    whose names are mentioned in the configuration file will be
+    loaded.
     """
     _setup_logging()
+    if cfgfile:
+        cfg = Config(cfgfile)
+        only_hosts = list(cfg.hosts.keys())
+    else:
+        only_hosts = None
     with database(db_uri) as db:
-        _load_all_perfdata(rootdir, db, force)
+        _load_all_perfdata(rootdir, db, force, only_hosts)
 
 
 @cli.command()
@@ -642,12 +742,19 @@ def load(path, db_uri, force=False):
 @option("--database", "--db", 'db_uri',
         default=None, envvar='DATABASE_URL', metavar='URI',
         help="Path to DB file or connection string")
-def plot(outfile, db_uri):
+@option("--config", "-c", 'cfgfile',
+        default='collant.cfg', envvar='COLLANT_CONFIG', metavar='PATH',
+        help=("Path to the a configuration file."
+              " A configuration file is required for generating plots;"
+              " the default is to use the file named `collant.cfg` in"
+              " the current directory."))
+def plot(outfile, db_uri, cfgfile):
     """Plot data from the database."""
     _setup_logging()
     db_uri = _expand_db_uri(db_uri)
+    cfg = Config(cfgfile)
     logging.info("Using database URI `%s`", db_uri)
-    plot_perfdata(outfile, db_uri)
+    plot_perfdata(outfile, db_uri, cfg)
 
 
 @cli.command()
