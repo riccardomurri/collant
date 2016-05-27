@@ -6,6 +6,7 @@ TMAPS_USER=ubuntu
 nr_plates=1
 nr_zplanes=1
 nr_timepoints=1
+nr_cycles=1
 nr_channels=4
 nr_sites=50
 nr_wells=250
@@ -38,14 +39,13 @@ set -ex  # debugging
 iosim.py create $URL $NUMFILES $FILESIZE --jobs 100
 sync
 
-#                                                    ===============================  ======================  ================
-#                                                    nr. jobs                         nr. images per job      payload (if any)
-#                                                    ===============================  ======================  ================
-run metaextract.iosim  iosim.py benchmark read $URL  $(( $NUMFILES / $BATCH_SIZE ))   $BATCH_SIZE
+#                                                    ==========================================  ======================  ================
+#                                                    nr. jobs                                    nr. images per job      payload (if any)
+#                                                    ==========================================  ======================  ================
+run metaextract.iosim  iosim.py benchmark read $URL  $(( $NUMFILES / $BATCH_SIZE ))              $BATCH_SIZE
 #run metaconfig.iosim
-run imextract.iosim    iosim.py benchmark write $URL $(( $NUMFILES / $BATCH_SIZE ))   $BATCH_SIZE             $FILESIZE
-run align.iosim        iosim.py benchmark read $URL  $(( $NUMFILES / $BATCH_SIZE ))   $(( 2 * $BATCH_SIZE ))
-run corilla.iosim      iosim.py benchmark read $URL  $nr_channels                     $(( $NUMFILES / $nr_channels ))
-run jterator.iosim     iosim.py benchmark read $URL  $(( $NUMFILES / $nr_channels ))  $nr_channels
-# NOTE: the actual illuminati usage is *much* worse: around 7'000'000/$BATCH_SIZE jobs would get submitted, each processing $BATCH_SIZE images, which adds startup overhead to the (already huge) filesystem load ...
-run illuminati.iosim   iosim.py benchmark write $URL 100                              70000                   16kB
+run imextract.iosim    iosim.py benchmark write $URL $(( $NUMFILES / $BATCH_SIZE ))              $BATCH_SIZE             $FILESIZE
+run align.iosim        iosim.py benchmark read $URL  $(( $nr_sites * $nr_plates / $BATCH_SIZE )) $BATCH_SIZE
+run corilla.iosim      iosim.py benchmark read $URL  $nr_channels                                $(( $NUMFILES / ( $nr_channels * $nr_plates ) ))
+run jterator.iosim     iosim.py benchmark read $URL  $(( $nr_sites * $nr_plates ))               $(( $nr_channels * $nr_zplanes * $nr_timepoints ))
+run illuminati.iosim   iosim.py benchmark write $URL $(( $UMFILES / $BATCH_SIZE ))               $BATCH_SIZE             16kB
