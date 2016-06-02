@@ -45,6 +45,13 @@ from click import argument, command, group, option, echo
 
 import dataset
 
+try:
+    from gc3libs import create_engine, Application
+    from gc3libs.quantity import Duration, seconds, Memory, MB
+    USE_GC3PIE = True
+except ImportError:
+    USE_GC3PIE = False
+
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -435,24 +442,96 @@ def stream_reader(file_obj_or_name):
 
 def _expand_db_uri(db_uri):
     if db_uri is None:
-        return const.db_uri
+        db_uri = const.db_uri
     elif ':' not in db_uri:
         # map filenames to SQLite URIs
         return ('sqlite:///{path}'.format(path=os.path.abspath(db_uri)))
-    else:
-        return db_uri
+    # ensure SQLite URLs refer to an absolute path
+    if db_uri.startswith('sqlite:///'):
+        db_uri = 'sqlite:///' + os.path.abspath(db_uri[len('sqlite:///'):])
+    return db_uri
 
 
 @contextmanager
 def database(db_uri):
     db_uri = _expand_db_uri(db_uri)
     logging.info("Using database URI `%s`", db_uri)
+    if db_uri.startswith('sqlite:'):
+        # concurrency issues in `dataset` support for SQLite, run 1 job at a time
+        global USE_GC3PIE
+        USE_GC3PIE = False
     with dataset.connect(db_uri, engine_kwargs={'poolclass':sqlalchemy.pool.StaticPool}) as db:
         # ensure a minimal structure is there
         db.get_table('perfdata')
         db.get_table('mtime', 'path', 'String').create_index(['path'])
         # pass control to caller
         yield db
+
+
+#
+# GC3Pie interface
+#
+
+def run_jobs(jobs, interval=15, verbose=False, max_concurrent=0):
+    """
+    Run a family of jobs until completion.
+
+    Each job is specified by giving the `argv`-array of the command to run.
+    """
+    engine = create_engine(max_in_flight=max_concurrent)
+    tasks = []  # convenience for extracting stats later
+    for n, argv in enumerate(jobs):
+        jobname = ('worker{n}'.format(n=n))
+        task = Application(
+            argv,
+            inputs=[],
+            outputs=[],
+            output_dir=os.path.join(os.getcwd(), jobname),
+            stdout=((jobname + '.log') if verbose else None),
+            stderr=((jobname + '.log') if verbose else None),
+            jobname = jobname,
+        )
+        engine.add(task)
+        tasks.append(task)
+    # loop until all jobs are done
+    stats = engine.stats()
+    done = stats['TERMINATED']
+    while done < jobs:
+        time.sleep(interval)
+        engine.progress()
+        stats = engine.stats()
+        done = stats['TERMINATED']
+        logging.info(
+            "%d jobs terminated (of which %d successfully),"
+            " %d running, %d queued.",
+            done, stats['ok'], stats['RUNNING'], stats['SUBMITTED'] + stats['NEW']
+        )
+    if verbose:
+        fields = [
+            # description  field name          type      zero value
+            ('duration',   'duration',         Duration, (0, seconds)),
+            ('CPU time',   'used_cpu_time',    Duration, (0, seconds)),
+            ('RAM',        'max_used_memory',  Memory,   (0, Memory.MB)),
+        ]
+        # initialize counters to 0
+        totals = {}
+        totals_ok  = {}
+        for desc, name, init, zero in fields:
+            totals[name] = init(*zero)
+            totals_ok[name] = init(*zero)
+        # compute totals
+        for task in tasks:
+            for desc, name, _, _ in fields:
+                value = getattr(task.execution, name)
+                totals[name] += value
+                if (task.execution.state == 'TERMINATED'
+                    and task.execution.returncode == 0):
+                    totals_ok[name] += value
+        # print totals and averages
+        print("Resource consumption statistics:")
+        for desc, name, _, _ in fields:
+            print ("- Average {0} per job: {1}".format(desc, totals[name] / jobs))
+            print ("- Average {0} per *successful* job: {1}".format(desc, totals_ok[name] / jobs))
 
 
 #
@@ -675,6 +754,8 @@ def _load_all_perfdata(rootdir, db, force=False, only_hosts=None):
 
     Each file is loaded using :func:`_load_perfdata_file` (which see).
     """
+    jobs = []
+    this = os.path.realpath(sys.argv[0])
     for path in _find_collectl_raw_files(rootdir, db, force):
         md = _get_metadata_from_filename(path)
         hostname = md['hostname']
@@ -682,7 +763,12 @@ def _load_all_perfdata(rootdir, db, force=False, only_hosts=None):
             logging.warning("Skipping host `%s`: not in desired host list.", hostname)
             continue
         # "force" loading: the check has already been performed by `_find_collectl_raw_files`
-        _load_perfdata_file(path, db, force=True, metadata=md)
+        if USE_GC3PIE:
+            jobs.append([this, 'load', '--force', os.path.realpath(path), '--db', db.url])
+        else:
+            _load_perfdata_file(path, db, force=True, metadata=md)
+    if USE_GC3PIE and jobs:
+        run_jobs(jobs, verbose=True)
 
 
 

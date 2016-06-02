@@ -1,6 +1,7 @@
 click
 coloredlogs
 dataset
+git+https://github.com/uzh/gc3pie.git@develop
 matplotlib
 pandas
 sqlalchemy
