@@ -791,7 +791,9 @@ def cli():
 @option("--config", "-c", 'cfgfile',
         default=None, envvar='COLLANT_CONFIG', metavar='PATH',
         help="Path to the a configuration file (optional).")
-def scan(rootdir, db_uri, force=False, cfgfile=None):
+@option("--no-gc3pie", 'no_gc3pie', is_flag=True, default=False,
+        help="Do not use GC3Pie even if available.")
+def scan(rootdir, db_uri, force=False, cfgfile=None, no_gc3pie=False):
     """
     Load collectl raw data files from a directory into the DB.
 
@@ -800,6 +802,11 @@ def scan(rootdir, db_uri, force=False, cfgfile=None):
     loaded.
     """
     _setup_logging()
+    global USE_GC3PIE
+    if no_gc3pie:
+        if USE_GC3PIE:
+            USE_GC3PIE = False
+            logging.warn("Not using GC3Pie, as requested though command-line switch `--no-gc3pie`.")
     if cfgfile:
         cfg = Config(cfgfile)
         only_hosts = list(cfg.hosts.keys())
